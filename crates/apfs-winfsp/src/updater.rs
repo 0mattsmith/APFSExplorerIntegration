@@ -35,11 +35,15 @@ pub fn run_update(quiet: bool) -> Result<bool, String> {
     let (owner, name) = repo()?;
     let mut updated = false;
 
+    // Private repos return 404 to anonymous API calls; a token in the
+    // GITHUB_TOKEN environment variable authenticates the check.
+    let token = std::env::var("GITHUB_TOKEN").ok();
+
     // Update both binaries shipped in the release zip. self_update swaps
     // the file at <current exe dir>\<bin_name>.
     for bin in ["apfs-mount.exe", "apfs.exe"] {
-        let status = Update::configure()
-            .repo_owner(&owner)
+        let mut cfg = Update::configure();
+        cfg.repo_owner(&owner)
             .repo_name(&name)
             // Assets are named apfs-windows-x64-vX.Y.Z.zip; `target` is
             // matched as a substring against asset names.
@@ -49,7 +53,11 @@ pub fn run_update(quiet: bool) -> Result<bool, String> {
             .current_version(cargo_crate_version!())
             .no_confirm(true)
             .show_download_progress(!quiet)
-            .show_output(!quiet)
+            .show_output(!quiet);
+        if let Some(t) = &token {
+            cfg.auth_token(t);
+        }
+        let status = cfg
             .build()
             .map_err(|e| format!("updater config: {e}"))?
             .update()

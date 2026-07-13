@@ -5,7 +5,10 @@ description = "Mount APFS containers as Windows drive letters via WinFsp"
 # this against the latest GitHub Release.
 version = "0.1.0"
 edition = "2021"
-repository.workspace = true
+# The self-updater reads owner/repo from this URL at compile time.
+# (This crate is excluded from the workspace, so it can't inherit the
+# workspace value — keep the literal URL here.)
+repository = "https://github.com/0mattsmith/APFSExplorerIntegration"
 # GPL-3.0 because the winfsp-rs bindings are GPL-3.0; the portable core
 # (apfs-core) remains MIT OR Apache-2.0.
 license = "GPL-3.0-only"

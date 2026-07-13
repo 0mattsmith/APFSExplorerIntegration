@@ -39,9 +39,20 @@ pub fn run_update(quiet: bool) -> Result<bool, String> {
     // GITHUB_TOKEN environment variable authenticates the check.
     let token = std::env::var("GITHUB_TOKEN").ok();
 
-    // Update both binaries shipped in the release zip. self_update swaps
-    // the file at <current exe dir>\<bin_name>.
+    // Update both binaries shipped in the release zip.
+    //
+    // IMPORTANT: self_update installs to the *running executable's* path
+    // by default, so without an explicit install path the second loop
+    // iteration would overwrite apfs-mount.exe with apfs.exe. Each binary
+    // must be routed to its own name in the exe's directory.
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("current_exe: {e}"))?
+        .parent()
+        .ok_or("exe has no parent directory")?
+        .to_path_buf();
+
     for bin in ["apfs-mount.exe", "apfs.exe"] {
+        let install_path = exe_dir.join(bin);
         let mut cfg = Update::configure();
         cfg.repo_owner(&owner)
             .repo_name(&name)
@@ -50,6 +61,7 @@ pub fn run_update(quiet: bool) -> Result<bool, String> {
             .target("windows-x64")
             .bin_name(bin)
             .bin_path_in_archive(bin)
+            .bin_install_path(&install_path)
             .current_version(cargo_crate_version!())
             .no_confirm(true)
             .show_download_progress(!quiet)

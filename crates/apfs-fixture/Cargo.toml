@@ -1,0 +1,10 @@
+[package]
+name = "apfs-fixture"
+description = "Test-fixture generator: injects known files into a fresh mkapfs image. Doubles as the experimental seed of APFS write support."
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+
+[dependencies]
+apfs-core = { path = "../apfs-core" }

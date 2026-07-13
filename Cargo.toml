@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/apfs-core",
+    "crates/apfs-cli",
+    "crates/apfs-fixture",
+]
+# apfs-winfsp is Windows-only; excluded from the default build so the
+# workspace builds/tests cleanly on any host. Build it on Windows with:
+#   cargo build --release --manifest-path crates/apfs-winfsp/Cargo.toml
+exclude = ["crates/apfs-winfsp"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/your-org/apfs-explorer-integration"
+
+[profile.release]
+lto = true
+codegen-units = 1

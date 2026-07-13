@@ -1,0 +1,14 @@
+[package]
+name = "apfs-core"
+description = "Portable, dependency-free APFS (Apple File System) read implementation"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Intentionally zero runtime dependencies: the core parses untrusted on-disk
+# data and must be easy to audit. All byte-level parsing is safe Rust.
+
+[dev-dependencies]
+# Used only to decompress the committed test fixture image.
+flate2 = "1"

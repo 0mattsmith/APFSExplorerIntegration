@@ -26,6 +26,8 @@ jobs:
   # Windows binaries: CLI + WinFsp mount tool.
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write # needed to create GitHub Releases on version tags
     env:
       # bindgen (winfsp-sys) needs libclang; the runner image ships LLVM.
       LIBCLANG_PATH: C:\Program Files\LLVM\bin

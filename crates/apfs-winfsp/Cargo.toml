@@ -1,8 +1,11 @@
 [package]
 name = "apfs-winfsp"
 description = "Mount APFS containers as Windows drive letters via WinFsp"
+# Keep in sync with the release tag (vX.Y.Z) — the self-updater compares
+# this against the latest GitHub Release.
 version = "0.1.0"
 edition = "2021"
+repository.workspace = true
 # GPL-3.0 because the winfsp-rs bindings are GPL-3.0; the portable core
 # (apfs-core) remains MIT OR Apache-2.0.
 license = "GPL-3.0-only"
@@ -21,6 +24,12 @@ apfs-core = { path = "../apfs-core" }
 # works at runtime.
 winfsp = { version = "0.13", features = ["delayload"] }
 winfsp-sys = "0.12"
+# Self-update from GitHub Releases (rustls so no OpenSSL on Windows).
+self_update = { version = "0.42", default-features = false, features = [
+    "archive-zip",
+    "compression-zip-deflate",
+    "rustls",
+] }
 
 [build-dependencies]
 winfsp = { version = "0.13", features = ["delayload"] }

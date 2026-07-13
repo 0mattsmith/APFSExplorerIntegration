@@ -16,6 +16,7 @@
 //! Requires WinFsp (https://winfsp.dev). v1 mounts read-only.
 
 mod fs;
+mod updater;
 
 use apfs_core::device::{FileDevice, SliceDevice};
 use apfs_core::{gpt, Container};
@@ -52,6 +53,22 @@ fn parse_args() -> Option<Args> {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
+            "update" => {
+                // Self-update from GitHub Releases, then exit.
+                match updater::run_update(false) {
+                    Ok(true) => println!("updated. New version runs on next start."),
+                    Ok(false) => println!("already up to date (v{}).", env!("CARGO_PKG_VERSION")),
+                    Err(e) => {
+                        eprintln!("update failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                std::process::exit(0);
+            }
+            "--version" | "-V" => {
+                println!("apfs-mount v{}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--device" | "--image" => args.source = Some(it.next()?),
             "--letter" => args.letter = Some(it.next()?),
             "--volume" => args.volume = it.next()?.parse().ok()?,
@@ -208,7 +225,13 @@ fn main() -> ExitCode {
 /// Plug-and-play mode: poll for APFS disks, mount on arrival to the next
 /// free letters, unmount on removal.
 fn watch_loop() -> ExitCode {
-    println!("watching for APFS drives (poll every {POLL_INTERVAL:?}, Ctrl+C to stop)...");
+    println!(
+        "apfs-mount v{} watching for APFS drives (poll every {POLL_INTERVAL:?}, Ctrl+C to stop)...",
+        env!("CARGO_PKG_VERSION")
+    );
+    // Real-user experience: the long-running watcher keeps itself current
+    // from GitHub Releases (checked daily; applied on next start).
+    updater::spawn_background_checker();
     // disk number -> mounted hosts (one per volume) with their letters
     let mut mounted: HashMap<u32, Vec<(FileSystemHost<ApfsFilesystem>, String, String)>> =
         HashMap::new();

@@ -47,6 +47,7 @@ jobs:
           New-Item -ItemType Directory -Path dist | Out-Null
           Copy-Item target/release/apfs.exe dist/
           Copy-Item crates/apfs-winfsp/target/release/apfs-mount.exe dist/
+          Copy-Item tools/install.ps1 dist/
           Copy-Item tools/install-automount.ps1 dist/
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

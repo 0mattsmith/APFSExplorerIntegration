@@ -146,9 +146,11 @@ pub const XATTR_RESOURCE_FORK: &str = "com.apple.ResourceFork";
 
 // ---- Inode internal flags (subset) ----
 pub const INODE_IS_APFS_PRIVATE: u64 = 0x0000_0001;
-pub const INODE_DIR_STATS: u64 = 0x0000_0010;
-pub const INODE_HAS_UNCOMPRESSED_SIZE: u64 = 0x0000_4000; // BSD-flags compressed size valid
-pub const INODE_IS_SPARSE: u64 = 0x0020_0000;
+pub const INODE_MAINTAIN_DIR_STATS: u64 = 0x0000_0002;
+pub const INODE_HAS_RSRC_FORK: u64 = 0x0000_4000;
+pub const INODE_NO_RSRC_FORK: u64 = 0x0000_8000;
+pub const INODE_HAS_UNCOMPRESSED_SIZE: u64 = 0x0004_0000;
+pub const INODE_IS_SPARSE: u64 = 0x0000_0200;
 
 // ---- BSD flags ----
 pub const UF_COMPRESSED: u32 = 0x20;

@@ -19,8 +19,9 @@ Remaining polish:
 - Name-hash fast path for lookups in huge directories (crc32c of
   case-folded NFD names — the hash function exists in `hash.rs`; needs the
   Unicode tables for non-ASCII).
-- decmpfs-compressed files (zlib inline/resource-fork first — the majority —
-  then LZVN/LZFSE).
+- decmpfs-compressed files: DONE for plain/zlib xattr and zlib resource
+  fork (v0.2.0, apfsck-verified fixtures); LZVN/LZFSE/LZBITMAP still
+  report a clean unsupported error and remain planned.
 - Snapshots exposed as a read-only `.snapshots` virtual folder.
 - Fuzzing: `cargo fuzz` harness feeding mutated fixture images to
   `Container::open` + full-tree walks (the parser is designed for this:

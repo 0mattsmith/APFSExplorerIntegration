@@ -112,6 +112,9 @@ struct InodeSpec {
     times: u64,
     size: u64,
     alloced: u64,
+    bsd_flags: u32,
+    internal_flags: u64,
+    uncompressed_size: u64,
     has_dstream: bool,
 }
 
@@ -123,16 +126,16 @@ fn build_inode(spec: &InodeSpec) -> Record {
     for _ in 0..4 {
         v.extend_from_slice(&spec.times.to_le_bytes()); // c/m/ch/a times
     }
-    v.extend_from_slice(&0u64.to_le_bytes()); // internal_flags
+    v.extend_from_slice(&spec.internal_flags.to_le_bytes());
     v.extend_from_slice(&(spec.nchildren_or_nlink as u32).to_le_bytes());
     v.extend_from_slice(&0u32.to_le_bytes()); // default_protection_class
     v.extend_from_slice(&1u32.to_le_bytes()); // write_generation_counter
-    v.extend_from_slice(&0u32.to_le_bytes()); // bsd_flags
+    v.extend_from_slice(&spec.bsd_flags.to_le_bytes());
     v.extend_from_slice(&501u32.to_le_bytes()); // owner
     v.extend_from_slice(&20u32.to_le_bytes()); // group
     v.extend_from_slice(&spec.mode.to_le_bytes());
     v.extend_from_slice(&0u16.to_le_bytes()); // pad1
-    v.extend_from_slice(&0u64.to_le_bytes()); // uncompressed_size / pad2
+    v.extend_from_slice(&spec.uncompressed_size.to_le_bytes());
 
     // Extended fields: NAME (+ DSTREAM for regular files).
     let name_c = format!("{}\0", spec.name);
@@ -214,6 +217,68 @@ fn build_symlink_xattr(id: u64, target: &str) -> Record {
     val.extend_from_slice(&(data.len() as u16).to_le_bytes());
     val.extend_from_slice(data.as_bytes());
     Record { key, val }
+}
+
+fn build_named_xattr(id: u64, name: &str, flags: u16, xdata: &[u8]) -> Record {
+    let mut key = jkey(id, APFS_TYPE_XATTR);
+    key.extend_from_slice(&((name.len() + 1) as u16).to_le_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key.push(0);
+    let mut val = Vec::new();
+    val.extend_from_slice(&flags.to_le_bytes());
+    val.extend_from_slice(&(xdata.len() as u16).to_le_bytes());
+    val.extend_from_slice(xdata);
+    Record { key, val }
+}
+
+fn decmpfs_header(algo: u32, size: u64) -> Vec<u8> {
+    let mut v = Vec::with_capacity(16);
+    v.extend_from_slice(&0x636d_7066u32.to_le_bytes()); // 'cmpf'
+    v.extend_from_slice(&algo.to_le_bytes());
+    v.extend_from_slice(&size.to_le_bytes());
+    v
+}
+
+/// Resource-fork blob for decmpfs ZLIB_RSRC (type 4), per apfsck's
+/// raw.h: 16-byte big-endian header; at the data offset a table of
+/// { ignored u32, count u32, count x { offs u32, size u32 } } (all LE)
+/// followed by the block streams; block data at data_offs + 4 + offs.
+/// Odd blocks are stored raw (0xFF prefix) to exercise both paths.
+fn build_cmpf_rsrc(content: &[u8]) -> Vec<u8> {
+    const BLOCK: usize = 0x10000;
+    let blocks: Vec<&[u8]> = content.chunks(BLOCK).collect();
+    let n = blocks.len();
+    let mut streams: Vec<Vec<u8>> = Vec::new();
+    for (i, b) in blocks.iter().enumerate() {
+        if i % 2 == 1 {
+            let mut raw = vec![0xFFu8];
+            raw.extend_from_slice(b);
+            streams.push(raw);
+        } else {
+            streams.push(miniz_oxide::deflate::compress_to_vec_zlib(b, 6));
+        }
+    }
+    let data_offs = 0x100usize;
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u32.to_le_bytes()); // ignored by readers
+    data.extend_from_slice(&(n as u32).to_le_bytes());
+    let mut pos = (4 + n * 8) as u32;
+    for st in &streams {
+        data.extend_from_slice(&pos.to_le_bytes());
+        data.extend_from_slice(&(st.len() as u32).to_le_bytes());
+        pos += st.len() as u32;
+    }
+    for st in &streams {
+        data.extend_from_slice(st);
+    }
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&(data_offs as u32).to_be_bytes());
+    blob.extend_from_slice(&((data_offs + data.len()) as u32).to_be_bytes());
+    blob.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    blob.extend_from_slice(&0u32.to_be_bytes());
+    blob.resize(data_offs, 0);
+    blob.extend_from_slice(&data);
+    blob
 }
 
 /// PHYS_EXT record for the extent-reference tree.
@@ -550,6 +615,10 @@ fn main() -> ExitCode {
     let readme_id = next_obj_id + 2;
     let big_id = next_obj_id + 3;
     let link_id = next_obj_id + 4;
+    let plain_id = next_obj_id + 5; // decmpfs type 9 (stored)
+    let zattr_id = next_obj_id + 6; // decmpfs type 3 (zlib in xattr)
+    let zrsrc_id = next_obj_id + 7; // decmpfs type 4 (zlib in rsrc fork)
+    let zrsrc_stream_id = next_obj_id + 8; // dstream backing the rsrc xattr
 
     let hello_data = b"Hello from APFS on Windows!\n".to_vec();
     let readme_data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
@@ -586,6 +655,16 @@ fn main() -> ExitCode {
     write_data(&mut img, big_blk_mid, &big_data[8192..12288]);
     write_data(&mut img, big_blk_b, &big_data[12288..]);
 
+    // ----- decmpfs-compressed content -----
+    let plain_data = b"stored uncompressed via decmpfs type 9\n".to_vec();
+    let zattr_data: Vec<u8> = b"compress me ".iter().copied().cycle().take(3000).collect();
+    // 100_000 bytes -> two 64 KiB blocks (second raw-stored by the builder).
+    let zrsrc_data: Vec<u8> = (0..100_000u32).map(|i| ((i / 9) % 251) as u8).collect();
+    let rsrc_blob = build_cmpf_rsrc(&zrsrc_data);
+    let rsrc_blocks = rsrc_blob.len().div_ceil(BS) as u64;
+    let rsrc_blk = alloc_blocks(&mut img, &sm, rsrc_blocks as usize);
+    write_data(&mut img, rsrc_blk, &rsrc_blob);
+
     // ----- build fs-tree records -----
     let mut recs = root_node.records.clone();
 
@@ -593,7 +672,7 @@ fn main() -> ExitCode {
     for r in recs.iter_mut() {
         if r.id() == ROOT_DIR_INO_NUM && r.rtype() == APFS_TYPE_INODE {
             let cur = r32(&r.val, 56);
-            w32(&mut r.val, 56, cur + 3);
+            w32(&mut r.val, 56, cur + 6);
         }
     }
 
@@ -606,6 +685,9 @@ fn main() -> ExitCode {
         times,
         size: hello_data.len() as u64,
         alloced: BS as u64,
+        bsd_flags: 0,
+        internal_flags: 0,
+        uncompressed_size: 0,
         has_dstream: true,
     }));
     recs.push(build_drec(ROOT_DIR_INO_NUM, "hello.txt", case_fold, hello_id, DT_REG, times));
@@ -621,6 +703,9 @@ fn main() -> ExitCode {
         times,
         size: 0,
         alloced: 0,
+        bsd_flags: 0,
+        internal_flags: 0,
+        uncompressed_size: 0,
         has_dstream: false,
     }));
     recs.push(build_drec(ROOT_DIR_INO_NUM, "docs", case_fold, docs_id, DT_DIR, times));
@@ -634,6 +719,9 @@ fn main() -> ExitCode {
         times,
         size: readme_data.len() as u64,
         alloced: BS as u64,
+        bsd_flags: 0,
+        internal_flags: 0,
+        uncompressed_size: 0,
         has_dstream: true,
     }));
     recs.push(build_drec(docs_id, "readme.md", case_fold, readme_id, DT_REG, times));
@@ -650,6 +738,9 @@ fn main() -> ExitCode {
         times,
         size: big_data.len() as u64,
         alloced: 5 * BS as u64,
+        bsd_flags: 0,
+        internal_flags: 0,
+        uncompressed_size: 0,
         has_dstream: true,
     }));
     recs.push(build_drec(docs_id, "big.bin", case_fold, big_id, DT_REG, times));
@@ -657,6 +748,58 @@ fn main() -> ExitCode {
     recs.push(build_file_extent(big_id, 0, 2 * BS as u64, big_blk_a));
     recs.push(build_file_extent(big_id, 2 * BS as u64, BS as u64, big_blk_mid));
     recs.push(build_file_extent(big_id, 3 * BS as u64, 2 * BS as u64, big_blk_b));
+
+    // Compressed files: UF_COMPRESSED, no data stream, content in xattrs.
+    for (id, name, size) in [
+        (plain_id, "plain-decmpfs.txt", plain_data.len() as u64),
+        (zattr_id, "packed.txt", zattr_data.len() as u64),
+        (zrsrc_id, "packed-rsrc.bin", zrsrc_data.len() as u64),
+    ] {
+        let mut iflags = INODE_HAS_UNCOMPRESSED_SIZE;
+        if id == zrsrc_id {
+            iflags |= INODE_HAS_RSRC_FORK;
+        }
+        recs.push(build_inode(&InodeSpec {
+            id,
+            parent: ROOT_DIR_INO_NUM,
+            name: name.into(),
+            mode: S_IFREG | 0o644,
+            nchildren_or_nlink: 1,
+            times,
+            size: 0,
+            alloced: 0,
+            bsd_flags: UF_COMPRESSED,
+            internal_flags: iflags,
+            uncompressed_size: size,
+            has_dstream: false,
+        }));
+        recs.push(build_drec(ROOT_DIR_INO_NUM, name, case_fold, id, DT_REG, times));
+    }
+    // type 9: header + prefix byte + raw data
+    let mut plain_x = decmpfs_header(9, plain_data.len() as u64);
+    plain_x.push(0xFF);
+    plain_x.extend_from_slice(&plain_data);
+    recs.push(build_named_xattr(plain_id, XATTR_DECMPFS, XATTR_DATA_EMBEDDED, &plain_x));
+    // type 3: header + zlib stream
+    let mut zattr_x = decmpfs_header(3, zattr_data.len() as u64);
+    zattr_x.extend_from_slice(&miniz_oxide::deflate::compress_to_vec_zlib(&zattr_data, 6));
+    recs.push(build_named_xattr(zattr_id, XATTR_DECMPFS, XATTR_DATA_EMBEDDED, &zattr_x));
+    // type 4: header-only decmpfs xattr + dstream-backed ResourceFork
+    recs.push(build_named_xattr(zrsrc_id, XATTR_DECMPFS, XATTR_DATA_EMBEDDED,
+        &decmpfs_header(4, zrsrc_data.len() as u64)));
+    let mut rsrc_x = Vec::with_capacity(48);
+    rsrc_x.extend_from_slice(&zrsrc_stream_id.to_le_bytes());
+    rsrc_x.extend_from_slice(&(rsrc_blob.len() as u64).to_le_bytes()); // size
+    rsrc_x.extend_from_slice(&(rsrc_blocks * BS as u64).to_le_bytes()); // alloced
+    rsrc_x.extend_from_slice(&0u64.to_le_bytes()); // crypto
+    rsrc_x.extend_from_slice(&(rsrc_blob.len() as u64).to_le_bytes()); // written
+    rsrc_x.extend_from_slice(&0u64.to_le_bytes()); // read
+    recs.push(build_named_xattr(zrsrc_id, XATTR_RESOURCE_FORK, XATTR_DATA_STREAM, &rsrc_x));
+    // NB: no DSTREAM_ID record — the xattr itself is the stream's single
+    // permitted reference (apfsck: "xattrs can't be cloned").
+    recs.push(build_file_extent(
+        zrsrc_stream_id, 0, rsrc_blocks * BS as u64, rsrc_blk,
+    ));
 
     recs.push(build_inode(&InodeSpec {
         id: link_id,
@@ -667,6 +810,9 @@ fn main() -> ExitCode {
         times,
         size: 0,
         alloced: 0,
+        bsd_flags: 0,
+        internal_flags: 0,
+        uncompressed_size: 0,
         has_dstream: false,
     }));
     recs.push(build_drec(ROOT_DIR_INO_NUM, "link-to-hello", case_fold, link_id, DT_LNK, times));
@@ -689,6 +835,7 @@ fn main() -> ExitCode {
     ext_recs.push(build_phys_ext(big_blk_a, 2, big_id));
     ext_recs.push(build_phys_ext(big_blk_mid, 1, big_id));
     ext_recs.push(build_phys_ext(big_blk_b, 2, big_id));
+    ext_recs.push(build_phys_ext(rsrc_blk, rsrc_blocks, zrsrc_stream_id));
     ext_recs.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
     let new_ext = NodeImage {
         paddr: layout.extentref_paddr,
@@ -702,20 +849,20 @@ fn main() -> ExitCode {
     {
         let o = OBJ_HDR_SIZE;
         let apsb = img.block_mut(layout.apsb_paddr);
-        w64(apsb, o + 144, link_id + 1); // next_obj_id
+        w64(apsb, o + 144, zrsrc_stream_id + 1); // next_obj_id
         let bump = |b: &mut [u8], off: usize, by: u64| {
             let cur = r64(b, off);
             w64(b, off, cur + by);
         };
-        bump(apsb, o + 152, 3); // num_files
+        bump(apsb, o + 152, 6); // num_files
         bump(apsb, o + 160, 1); // num_directories
         bump(apsb, o + 168, 1); // num_symlinks
-        bump(apsb, o + 56, 7); // fs_alloc_count: 7 new data blocks
-        bump(apsb, o + 192, 7); // total_blocks_alloced
+        bump(apsb, o + 56, 7 + rsrc_blocks); // fs_alloc_count
+        bump(apsb, o + 192, 7 + rsrc_blocks); // total_blocks_alloced
         img.fix_checksum(layout.apsb_paddr);
     }
 
     std::fs::write(&path, &img.data).expect("write image");
-    println!("fixture injected: 3 files, 1 dir, 1 symlink");
+    println!("fixture injected: 6 files (3 compressed), 1 dir, 1 symlink");
     ExitCode::SUCCESS
 }

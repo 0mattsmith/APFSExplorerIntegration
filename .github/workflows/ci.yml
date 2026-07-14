@@ -35,6 +35,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # Guardrail: a version tag must match the apfs-winfsp crate version,
+      # otherwise the self-updater re-downloads the same release forever.
+      - name: Check tag matches crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tagVer = $env:GITHUB_REF_NAME.TrimStart("v")
+          $crateVer = (Select-String -Path crates/apfs-winfsp/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($tagVer -ne $crateVer) {
+            Write-Error "tag $env:GITHUB_REF_NAME does not match apfs-winfsp version $crateVer - bump Cargo.toml before tagging"
+            exit 1
+          }
+          Write-Host "tag/version OK: $crateVer"
+
       - name: Test workspace on Windows
         run: cargo test --workspace
       - name: Build CLI (release)
@@ -49,6 +64,24 @@ jobs:
           Copy-Item crates/apfs-winfsp/target/release/apfs-mount.exe dist/
           Copy-Item tools/install.ps1 dist/
           Copy-Item tools/install-automount.ps1 dist/
+      # Guardrail: each staged exe must be the binary it claims to be
+      # (catches the classic wrong-binary-in-the-zip packaging bug).
+      - name: Smoke-test staged binaries
+        shell: pwsh
+        run: |
+          $mv = & dist/apfs-mount.exe --version
+          if ($LASTEXITCODE -ne 0 -or $mv -notmatch "^apfs-mount v\d") {
+            Write-Error "apfs-mount.exe smoke test failed: '$mv'"
+            exit 1
+          }
+          # apfs.exe has no --version; its usage banner identifies it.
+          $cv = & dist/apfs.exe 2>&1 | Out-String
+          if ($cv -notmatch "usage: apfs <info") {
+            Write-Error "apfs.exe smoke test failed: '$cv'"
+            exit 1
+          }
+          Write-Host "smoke OK: $mv"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

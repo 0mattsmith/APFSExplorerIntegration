@@ -44,9 +44,9 @@ fn container_and_volume_metadata() {
     assert_eq!(c.volume_oids().len(), 1);
     let vol = c.volume(0).unwrap();
     assert_eq!(vol.name(), "TestVol");
-    assert_eq!(vol.superblock.num_files, 3);
+    assert_eq!(vol.superblock.num_files, 6);
     assert_eq!(vol.superblock.num_directories, 1);
-    assert_eq!(vol.superblock.num_symlinks, 3 - 2); // 1
+    assert_eq!(vol.superblock.num_symlinks, 1);
     assert!(vol.superblock.case_insensitive());
 }
 
@@ -61,7 +61,17 @@ fn list_root_directory() {
         .map(|e| e.name)
         .collect();
     names.sort();
-    assert_eq!(names, ["docs", "hello.txt", "link-to-hello"]);
+    assert_eq!(
+        names,
+        [
+            "docs",
+            "hello.txt",
+            "link-to-hello",
+            "packed-rsrc.bin",
+            "packed.txt",
+            "plain-decmpfs.txt",
+        ]
+    );
 }
 
 #[test]
@@ -160,7 +170,7 @@ fn root_inode_child_count() {
     let vol = c.volume(0).unwrap();
     let root = vol.inode(ROOT_DIR_INO_NUM).unwrap();
     assert!(root.is_dir());
-    assert_eq!(root.nchildren_or_nlink, 3);
+    assert_eq!(root.nchildren_or_nlink, 6);
 }
 
 #[test]
@@ -189,4 +199,67 @@ fn free_space_from_space_manager() {
     let free = c.free_block_count().unwrap();
     // The 4096-block fixture has plenty free, but not everything.
     assert!(free > 0 && free < c.superblock.block_count, "free={free}");
+}
+
+
+// ---- decmpfs (transparently compressed files) ----
+
+fn packed_txt_bytes() -> Vec<u8> {
+    b"compress me ".iter().copied().cycle().take(3000).collect()
+}
+
+fn packed_rsrc_bytes() -> Vec<u8> {
+    (0..100_000u32).map(|i| ((i / 9) % 251) as u8).collect()
+}
+
+#[test]
+fn decmpfs_plain_xattr() {
+    let c = load_fixture();
+    let vol = c.volume(0).unwrap();
+    let inode = vol.lookup_path("/plain-decmpfs.txt").unwrap();
+    assert!(inode.is_compressed());
+    assert_eq!(inode.size, 39); // from INODE_HAS_UNCOMPRESSED_SIZE
+    assert_eq!(
+        vol.read_file(&inode).unwrap(),
+        b"stored uncompressed via decmpfs type 9\n"
+    );
+}
+
+#[test]
+fn decmpfs_zlib_xattr() {
+    let c = load_fixture();
+    let vol = c.volume(0).unwrap();
+    let inode = vol.lookup_path("/packed.txt").unwrap();
+    assert!(inode.is_compressed());
+    assert_eq!(inode.size, 3000);
+    assert_eq!(vol.read_file(&inode).unwrap(), packed_txt_bytes());
+}
+
+#[test]
+fn decmpfs_zlib_resource_fork() {
+    let c = load_fixture();
+    let vol = c.volume(0).unwrap();
+    let inode = vol.lookup_path("/packed-rsrc.bin").unwrap();
+    assert!(inode.is_compressed());
+    assert_eq!(inode.size, 100_000);
+    // Two 64 KiB blocks: the first zlib, the second raw-stored (0xFF).
+    assert_eq!(vol.read_file(&inode).unwrap(), packed_rsrc_bytes());
+}
+
+#[test]
+fn decmpfs_resource_fork_random_access() {
+    let c = load_fixture();
+    let vol = c.volume(0).unwrap();
+    let inode = vol.lookup_path("/packed-rsrc.bin").unwrap();
+    let expected = packed_rsrc_bytes();
+    // Windows spanning the 64 KiB block boundary (zlib block -> raw block)
+    // and the EOF.
+    for (off, len) in [(0usize, 10usize), (65_530, 100), (65_536, 16), (99_990, 100)] {
+        let mut buf = vec![0u8; len];
+        let n = vol.read_file_at(&inode, off as u64, &mut buf).unwrap();
+        let want = &expected[off..(off + len).min(expected.len())];
+        assert_eq!(&buf[..n], want, "offset {off} len {len}");
+    }
+    let mut buf = [0u8; 8];
+    assert_eq!(vol.read_file_at(&inode, 1 << 20, &mut buf).unwrap(), 0);
 }

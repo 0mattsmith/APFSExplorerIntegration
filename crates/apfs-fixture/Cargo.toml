@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license = "MIT OR Apache-2.0"
 
-
 [dependencies]
 apfs-core = { path = "../apfs-core" }
+# To *create* decmpfs-compressed fixture content.
+miniz_oxide = "0.7"

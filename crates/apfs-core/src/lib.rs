@@ -33,6 +33,8 @@
 pub mod btree;
 pub mod checksum;
 pub mod container;
+#[cfg(feature = "compress")]
+pub mod decmpfs;
 pub mod device;
 pub mod error;
 pub mod fs;

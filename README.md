@@ -30,6 +30,10 @@ fixture tool, validated clean by `apfsck`) and checks directory listings,
 multi-extent file contents byte-for-byte, symlink targets, case-insensitive
 lookup and checksum enforcement end to end.
 
+decmpfs transparent compression is supported for the common zlib and
+uncompressed variants, so macOS-compressed files open normally; LZVN/LZFSE
+variants are detected and reported cleanly (planned).
+
 Write support is deliberately phased (see `docs/ROADMAP.md`). APFS is a
 copy-on-write filesystem; safe writes must build a whole new checkpoint
 transaction. The fixture injector already performs the core mechanics

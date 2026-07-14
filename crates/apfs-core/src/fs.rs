@@ -71,7 +71,7 @@ impl Inode {
         let group = r.u32()?;
         let mode = r.u16()?;
         let _pad1 = r.u16()?;
-        let _uncompressed_size = r.u64()?;
+        let uncompressed_size = r.u64()?;
 
         let mut inode = Inode {
             id,
@@ -123,6 +123,14 @@ impl Inode {
                     r.skip(pad)?;
                 }
             }
+        }
+        // For compressed files without a data stream, the inode's trailing
+        // u64 carries the uncompressed size when this flag is set.
+        if inode.is_compressed()
+            && inode.size == 0
+            && inode.internal_flags & INODE_HAS_UNCOMPRESSED_SIZE != 0
+        {
+            inode.size = uncompressed_size;
         }
         Ok(inode)
     }
@@ -286,8 +294,11 @@ impl<'c> Volume<'c> {
             return Err(Error::IsADirectory);
         }
         if inode.is_compressed() {
+            #[cfg(feature = "compress")]
+            return crate::decmpfs::read_at(self, inode, offset, buf);
+            #[cfg(not(feature = "compress"))]
             return Err(Error::Unsupported(
-                "decmpfs-compressed file (planned: zlib/lzvn decompression)",
+                "decmpfs-compressed file (rebuild with the 'compress' feature)",
             ));
         }
         let size = inode.size;
